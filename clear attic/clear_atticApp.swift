@@ -21,8 +21,8 @@ nonisolated func formatBytes(_ bytes: Int64) -> String {
 }
 
 nonisolated func makeMenuBarIcon() -> NSImage {
-    let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-    if let img = NSImage(systemSymbolName: "broom.fill", accessibilityDescription: "Clear Attic")?
+    let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+    if let img = NSImage(systemSymbolName: "paintbrush.fill", accessibilityDescription: "Clear Attic")?
         .withSymbolConfiguration(cfg) {
         img.isTemplate = true
         return img
@@ -477,7 +477,7 @@ struct IdleView: View {
             idleRow("scan") {
                 vm.scan()
             } label: {
-                Text("Scan Attic").font(.system(size: 12))
+                Text("Scan Attic").font(.system(size: 13))
                 Spacer()
                 ShortcutLabel(key: "S")
             }
@@ -488,7 +488,7 @@ struct IdleView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { vm.autoCleanExpanded.toggle() }
                 } label: {
                     HStack {
-                        Text("Auto Clean").font(.system(size: 12))
+                        Text("Auto Clean").font(.system(size: 13))
                         Spacer()
                     }
                     .contentShape(Rectangle())
@@ -525,7 +525,7 @@ struct IdleView: View {
 
             // 3. Launch at Login
             HStack {
-                Text("Launch at Login").font(.system(size: 12))
+                Text("Launch at Login").font(.system(size: 13))
                 Spacer()
                 MiniToggle(isOn: $vm.launchAtLogin)
             }
@@ -535,14 +535,14 @@ struct IdleView: View {
                 vm.demoMode = true
                 vm.scan()
             } label: {
-                Text("Show how it works").font(.system(size: 12))
+                Text("Show how it works").font(.system(size: 13))
             }
 
             // 5. Quit
             idleRow("quit") {
                 NSApp.terminate(nil)
             } label: {
-                Text("Quit").font(.system(size: 12))
+                Text("Quit").font(.system(size: 13))
                 Spacer()
                 ShortcutLabel(key: "Q")
             }
@@ -575,7 +575,7 @@ struct ScanningView: View {
                     .scaleEffect(0.9)
                     .tint(.white.opacity(0.6))
                 Text("Poking around the attic…")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.8))
                 Text("\(vm.scannedCount.formatted()) items checked")
                     .font(.system(size: 10))
@@ -599,7 +599,7 @@ struct ResultsView: View {
             if vm.items.isEmpty {
                 Spacer()
                 Text("Nothing dusty up here.")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.5))
                 Spacer()
             } else {
@@ -639,7 +639,7 @@ struct ResultRow: View {
             HStack(spacing: 8) {
                 Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
                     .foregroundColor(item.isSelected ? .white : .white.opacity(0.3))
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                 Text(item.name)
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.9))
@@ -674,7 +674,7 @@ struct DoneView: View {
                     .font(.system(size: 24))
                     .foregroundColor(.green)
                 Text("Attic cleared.")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.7))
                 Text(formatBytes(vm.totalFreed))
                     .font(.system(size: 22, weight: .bold))
