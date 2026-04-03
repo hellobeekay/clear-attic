@@ -377,7 +377,7 @@ struct PopoverRoot: View {
     private var height: CGFloat {
         switch vm.phase {
         case .idle:
-            let base: CGFloat = 220
+            let base: CGFloat = 230
             return vm.autoCleanExpanded ? base + 36 : base
         case .scanning: return 180
         case .results:
@@ -546,7 +546,8 @@ struct IdleView: View {
             }
         }
         .foregroundColor(.white)
-        .padding(.vertical, 30)
+        .padding(.top, 40)
+        .padding(.bottom, 30)
         .padding(.horizontal, 20)
     }
 
