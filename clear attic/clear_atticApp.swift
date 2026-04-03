@@ -172,6 +172,10 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     private func scheduleDoneReset() {
+        // Play completion chime
+        if let glass = NSSound(named: NSSound.Name("Glass")) { glass.play() }
+        else { NSSound.beep() }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.phase == .done else { return }
             self.goIdle()
@@ -374,11 +378,9 @@ struct ClearAtticApp: App {
 struct PopoverRoot: View {
     @ObservedObject var vm: AtticVM
 
-    private var height: CGFloat {
+    private var fixedHeight: CGFloat? {
         switch vm.phase {
-        case .idle:
-            let base: CGFloat = 230
-            return vm.autoCleanExpanded ? base + 36 : base
+        case .idle:     return nil  // content-sized
         case .scanning: return 180
         case .results:
             if vm.items.isEmpty { return 160 }
@@ -397,7 +399,7 @@ struct PopoverRoot: View {
             case .done:     DoneView(vm: vm).transition(.opacity)
             }
         }
-        .frame(width: 223, height: height)
+        .frame(width: 223, height: fixedHeight)
         .animation(.easeInOut(duration: 0.25), value: vm.phase)
         .animation(.easeInOut(duration: 0.15), value: vm.autoCleanExpanded)
         .background {
@@ -546,8 +548,7 @@ struct IdleView: View {
             }
         }
         .foregroundColor(.white)
-        .padding(.top, 40)
-        .padding(.bottom, 30)
+        .padding(.vertical, 20)
         .padding(.horizontal, 20)
     }
 
