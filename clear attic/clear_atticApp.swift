@@ -148,7 +148,8 @@ nonisolated class AtticVM: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let fm = FileManager.default
             for item in doomed {
-                try? fm.removeItem(at: item.url)
+                do { try fm.trashItem(at: item.url, resultingItemURL: nil) }
+                catch { try? fm.removeItem(at: item.url) }
             }
         }
     }
@@ -185,7 +186,8 @@ nonisolated class AtticVM: ObservableObject {
         var freed: Int64 = 0
         let fm = FileManager.default
         for item in toDelete {
-            if (try? fm.removeItem(at: item.url)) != nil { freed += item.size }
+            do { try fm.trashItem(at: item.url, resultingItemURL: nil); freed += item.size }
+            catch { do { try fm.removeItem(at: item.url); freed += item.size } catch {} }
         }
         if freed > 0 { sendNotification(freed: freed) }
     }
