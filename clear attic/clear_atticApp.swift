@@ -86,14 +86,23 @@ nonisolated class AtticVM: ObservableObject {
     var selectedCount: Int { items.filter(\.isSelected).count }
 
     init() {
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        if #available(macOS 13.0, *) {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        } else {
+            launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
+        }
         autoCleanEnabled = UserDefaults.standard.bool(forKey: "autoClean")
         autoCleanDay = UserDefaults.standard.object(forKey: "autoCleanDay") as? Int ?? 1
         autoCleanHour = UserDefaults.standard.object(forKey: "autoCleanHour") as? Int ?? 21
 
         $launchAtLogin.dropFirst().sink { val in
-            if val { try? SMAppService.mainApp.register() }
-            else { try? SMAppService.mainApp.unregister() }
+            if #available(macOS 13.0, *) {
+                if val { try? SMAppService.mainApp.register() }
+                else { try? SMAppService.mainApp.unregister() }
+            } else {
+                SMLoginItemSetEnabled("com.hellobeekay.clear-attic" as CFString, val)
+                UserDefaults.standard.set(val, forKey: "launchAtLogin")
+            }
         }.store(in: &cancellables)
         $autoCleanEnabled.dropFirst().sink { val in
             UserDefaults.standard.set(val, forKey: "autoClean")
@@ -107,7 +116,11 @@ nonisolated class AtticVM: ObservableObject {
         }
     }
 
-    func syncLaunchAtLogin() { launchAtLogin = SMAppService.mainApp.status == .enabled }
+    func syncLaunchAtLogin() {
+        if #available(macOS 13.0, *) {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
 
     func goIdle() {
         generation += 1
