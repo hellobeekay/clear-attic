@@ -71,7 +71,7 @@ nonisolated class AtticVM: ObservableObject {
     @Published var autoCleanHour = 21
     @Published var autoCleanExpanded = false
 
-    private let threshold: Int64 = 100 * 1024 * 1024
+    private let threshold: Int64 = 25 * 1024 * 1024
     private var generation = 0
     private var cancellables = Set<AnyCancellable>()
 
@@ -148,8 +148,7 @@ nonisolated class AtticVM: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let fm = FileManager.default
             for item in doomed {
-                do { try fm.trashItem(at: item.url, resultingItemURL: nil) }
-                catch { try? fm.removeItem(at: item.url) }
+                try? fm.removeItem(at: item.url)
             }
         }
     }
@@ -186,8 +185,7 @@ nonisolated class AtticVM: ObservableObject {
         var freed: Int64 = 0
         let fm = FileManager.default
         for item in toDelete {
-            do { try fm.trashItem(at: item.url, resultingItemURL: nil); freed += item.size }
-            catch { do { try fm.removeItem(at: item.url); freed += item.size } catch {} }
+            if (try? fm.removeItem(at: item.url)) != nil { freed += item.size }
         }
         if freed > 0 { sendNotification(freed: freed) }
     }
@@ -240,24 +238,61 @@ nonisolated class AtticVM: ObservableObject {
 
         scanDir("Library/Caches", .dust)
         scanDir("Library/Logs", .oldNotes)
-        for r in ["Library/Developer/Xcode/DerivedData", "Library/Developer/Xcode/Archives"] {
+
+        // Xcode build artifacts
+        for r in ["Library/Developer/Xcode/DerivedData",
+                  "Library/Developer/Xcode/Archives",
+                  "Library/Developer/Xcode/iOS DeviceSupport",
+                  "Library/Developer/Xcode/watchOS DeviceSupport",
+                  "Library/Developer/Xcode/tvOS DeviceSupport",
+                  "Library/Developer/Xcode/visionOS DeviceSupport"] {
             if shouldStop() { break }; scanDir(r, .blueprints)
         }
+
+        // Simulators
         let sim = home.appendingPathComponent("Library/Developer/CoreSimulator/Devices")
         if fm.fileExists(atPath: sim.path) { onTick(); add(sim, .toyModels, dir: true, sel: false) }
 
+        // iPhone/iPad backups
+        let backup = home.appendingPathComponent("Library/Application Support/MobileSync/Backup")
+        if fm.fileExists(atPath: backup.path) { onTick(); add(backup, .packedBags, dir: true, sel: false) }
+
+        // Package manager caches (dotfile dirs)
+        let dotCaches: [(String, ItemCategory)] = [
+            (".npm",              .forgottenBoxes),  // npm
+            (".yarn/cache",       .forgottenBoxes),  // Yarn
+            (".pnpm-store",       .forgottenBoxes),  // pnpm
+            (".gradle/caches",    .forgottenBoxes),  // Gradle
+            (".m2/repository",    .forgottenBoxes),  // Maven
+            (".pub-cache",        .forgottenBoxes),  // Flutter/Dart
+            (".cargo/registry",   .forgottenBoxes),  // Rust
+            (".cargo/git",        .forgottenBoxes),  // Rust git sources
+            (".rustup/toolchains",.forgottenBoxes),  // Rust toolchains
+            (".gem",              .dust),             // Ruby gems
+            (".rbenv/versions",   .dust),             // rbenv Rubies
+            (".pyenv/versions",   .dust),             // pyenv Pythons
+        ]
+        for (rel, cat) in dotCaches where !shouldStop() {
+            let p = home.appendingPathComponent(rel)
+            if fm.fileExists(atPath: p.path) { onTick(); add(p, cat, dir: true) }
+        }
+
+        // node_modules in project directories
         for root in ["Documents", "Projects", "Developer", "Code", "Sites", "Desktop", "src"] {
             if shouldStop() { break }
             let r = home.appendingPathComponent(root)
             if fm.fileExists(atPath: r.path) { findNM(in: r, depth: 0, threshold: threshold, shouldStop: shouldStop, onTick: onTick, fm: fm, found: &found) }
         }
 
-        let exts = Set(["dmg", "pkg", "zip"])
+        // Large files in Downloads
+        let exts = Set(["dmg", "pkg", "zip", "iso", "ipa", "xip", "tar", "gz", "rar", "7z"])
         if let list = try? fm.contentsOfDirectory(at: home.appendingPathComponent("Downloads"), includingPropertiesForKeys: nil) {
             for item in list where !shouldStop() {
                 if exts.contains(item.pathExtension.lowercased()) { onTick(); add(item, .packedBags, dir: false) }
             }
         }
+
+        // Trash
         let trash = home.appendingPathComponent(".Trash")
         if fm.fileExists(atPath: trash.path) { onTick(); add(trash, .junkPile, dir: true) }
 
