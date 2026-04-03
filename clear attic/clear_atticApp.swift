@@ -695,6 +695,10 @@ struct DoneView: View {
                 Text("freed")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.4))
+                Text("Files are moved to trash.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.25))
+                    .padding(.top, 4)
             }
             Spacer()
         }
