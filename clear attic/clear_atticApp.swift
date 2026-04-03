@@ -335,6 +335,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
         let vm = AtticVM()
         self.viewModel = vm
 
@@ -530,15 +531,7 @@ struct IdleView: View {
                 MiniToggle(isOn: $vm.launchAtLogin)
             }
 
-            // 4. Show how it works (runs demo scan)
-            idleRow("howitworks") {
-                vm.demoMode = true
-                vm.scan()
-            } label: {
-                Text("Show how it works").font(.system(size: 13))
-            }
-
-            // 5. Quit
+            // 4. Quit
             idleRow("quit") {
                 NSApp.terminate(nil)
             } label: {
