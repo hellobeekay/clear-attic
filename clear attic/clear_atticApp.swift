@@ -20,8 +20,6 @@ nonisolated func formatBytes(_ bytes: Int64) -> String {
     return String(format: "%.0f KB", val / 1024)
 }
 
-// MARK: - Menu Bar Icon
-
 nonisolated func makeMenuBarIcon() -> NSImage {
     let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
     if let img = NSImage(systemSymbolName: "broom.fill", accessibilityDescription: "Clear Attic")?
@@ -29,9 +27,7 @@ nonisolated func makeMenuBarIcon() -> NSImage {
         img.isTemplate = true
         return img
     }
-    // Fallback for older systems
-    let fallback = NSImage(systemSymbolName: "archivebox", accessibilityDescription: "Clear Attic")
-        ?? NSImage()
+    let fallback = NSImage(systemSymbolName: "archivebox", accessibilityDescription: "Clear Attic") ?? NSImage()
     fallback.isTemplate = true
     return fallback
 }
@@ -72,8 +68,9 @@ nonisolated class AtticVM: ObservableObject {
     @Published var demoMode = false
     @Published var launchAtLogin = false
     @Published var autoCleanEnabled = false
-    @Published var autoCleanDay = 1      // 1=Sunday … 7=Saturday
-    @Published var autoCleanHour = 21    // 9 PM
+    @Published var autoCleanDay = 1
+    @Published var autoCleanHour = 21
+    @Published var autoCleanExpanded = false
 
     private let threshold: Int64 = 100 * 1024 * 1024
     private var generation = 0
@@ -81,14 +78,10 @@ nonisolated class AtticVM: ObservableObject {
 
     static let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
     static func hourLabel(_ h: Int) -> String {
-        if h == 0 { return "12 AM" }
-        if h < 12 { return "\(h) AM" }
-        if h == 12 { return "12 PM" }
-        return "\(h - 12) PM"
+        if h == 0 { return "12 AM" }; if h < 12 { return "\(h) AM" }
+        if h == 12 { return "12 PM" }; return "\(h - 12) PM"
     }
     var scheduleText: String { "\(Self.days[autoCleanDay - 1]) \(Self.hourLabel(autoCleanHour))" }
-
-    // MARK: Demo data
 
     private static func gb(_ v: Double) -> Int64 { Int64(v * 1_073_741_824) }
     private static func mb(_ v: Double) -> Int64 { Int64(v * 1_048_576) }
@@ -109,21 +102,16 @@ nonisolated class AtticVM: ObservableObject {
     var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.size } }
     var selectedCount: Int { items.filter(\.isSelected).count }
 
-    // MARK: Init
-
     init() {
-        // Restore persisted settings
         launchAtLogin = SMAppService.mainApp.status == .enabled
         autoCleanEnabled = UserDefaults.standard.bool(forKey: "autoClean")
         autoCleanDay = UserDefaults.standard.object(forKey: "autoCleanDay") as? Int ?? 1
         autoCleanHour = UserDefaults.standard.object(forKey: "autoCleanHour") as? Int ?? 21
 
-        // Persist changes
         $launchAtLogin.dropFirst().sink { val in
             if val { try? SMAppService.mainApp.register() }
             else { try? SMAppService.mainApp.unregister() }
         }.store(in: &cancellables)
-
         $autoCleanEnabled.dropFirst().sink { val in
             UserDefaults.standard.set(val, forKey: "autoClean")
             if val { UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in } }
@@ -131,17 +119,17 @@ nonisolated class AtticVM: ObservableObject {
         $autoCleanDay.dropFirst().sink { UserDefaults.standard.set($0, forKey: "autoCleanDay") }.store(in: &cancellables)
         $autoCleanHour.dropFirst().sink { UserDefaults.standard.set($0, forKey: "autoCleanHour") }.store(in: &cancellables)
 
-        // Auto-clean timer — check every 60s
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.checkAutoClean()
         }
     }
 
-    func syncLaunchAtLogin() {
-        launchAtLogin = SMAppService.mainApp.status == .enabled
-    }
+    func syncLaunchAtLogin() { launchAtLogin = SMAppService.mainApp.status == .enabled }
 
-    // MARK: Actions
+    func goIdle() {
+        generation += 1
+        phase = .idle; items = []; scannedCount = 0; totalFreed = 0; autoCleanExpanded = false
+    }
 
     func scan() {
         if demoMode { demoScan(); return }
@@ -168,11 +156,12 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     func clear() {
-        if demoMode { totalFreed = Int64(510.7 * 1_073_741_824); phase = .done; return }
+        if demoMode { totalFreed = Int64(510.7 * 1_073_741_824); phase = .done; scheduleDoneReset(); return }
         let doomed = items.filter(\.isSelected)
         guard !doomed.isEmpty else { return }
         totalFreed = doomed.reduce(0) { $0 + $1.size }
         phase = .done
+        scheduleDoneReset()
         DispatchQueue.global(qos: .utility).async {
             let fm = FileManager.default
             for item in doomed {
@@ -182,14 +171,20 @@ nonisolated class AtticVM: ObservableObject {
         }
     }
 
+    private func scheduleDoneReset() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.phase == .done else { return }
+            self.goIdle()
+        }
+    }
+
     // MARK: Auto-Clean
 
     private func checkAutoClean() {
         guard autoCleanEnabled else { return }
         let cal = Calendar.current, now = Date()
-        let weekday = cal.component(.weekday, from: now)   // 1=Sunday
-        let hour = cal.component(.hour, from: now)
-        guard weekday == autoCleanDay && hour == autoCleanHour else { return }
+        guard cal.component(.weekday, from: now) == autoCleanDay,
+              cal.component(.hour, from: now) == autoCleanHour else { return }
         let today = cal.startOfDay(for: now)
         let last = UserDefaults.standard.object(forKey: "lastAutoClean") as? Date ?? .distantPast
         guard cal.startOfDay(for: last) != today else { return }
@@ -204,27 +199,19 @@ nonisolated class AtticVM: ObservableObject {
         var freed: Int64 = 0
         let fm = FileManager.default
         for item in toDelete {
-            do {
-                try fm.trashItem(at: item.url, resultingItemURL: nil)
-                freed += item.size
-            } catch {
-                do { try fm.removeItem(at: item.url); freed += item.size }
-                catch {}
-            }
+            do { try fm.trashItem(at: item.url, resultingItemURL: nil); freed += item.size }
+            catch { do { try fm.removeItem(at: item.url); freed += item.size } catch {} }
         }
         if freed > 0 { sendNotification(freed: freed) }
     }
 
     private func sendNotification(freed: Int64) {
-        let content = UNMutableNotificationContent()
-        content.title = "Clear Attic"
-        content.body = "Attic cleared. \(formatBytes(freed)) freed."
-        content.sound = .default
-        let req = UNNotificationRequest(identifier: "auto-clean-\(Date())", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        let c = UNMutableNotificationContent()
+        c.title = "Clear Attic"; c.body = "Attic cleared. \(formatBytes(freed)) freed."; c.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
     }
 
-    // MARK: Scan logic (shared between interactive & auto-clean)
+    // MARK: Scan Logic
 
     static func collectItems(threshold: Int64, shouldStop: @escaping () -> Bool = { false },
                              onTick: @escaping () -> Void = {}) -> [ScanItem] {
@@ -284,7 +271,6 @@ nonisolated class AtticVM: ObservableObject {
                 if exts.contains(item.pathExtension.lowercased()) { onTick(); add(item, .packedBags, dir: false) }
             }
         }
-
         let trash = home.appendingPathComponent(".Trash")
         if fm.fileExists(atPath: trash.path) { onTick(); add(trash, .junkPile, dir: true) }
 
@@ -357,8 +343,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let pop = NSPopover()
-        pop.contentSize = NSSize(width: 320, height: 232)
+        pop.contentSize = NSSize(width: 223, height: 240)
         pop.behavior = .transient
+        pop.appearance = NSAppearance(named: .darkAqua)
         pop.contentViewController = NSHostingController(rootView: PopoverRoot(vm: vm))
         self.popover = pop
     }
@@ -389,28 +376,30 @@ struct PopoverRoot: View {
 
     private var height: CGFloat {
         switch vm.phase {
-        case .idle:     return vm.autoCleanEnabled ? 264 : 232
-        case .scanning: return 200
+        case .idle:
+            let base: CGFloat = 220
+            return vm.autoCleanExpanded ? base + 36 : base
+        case .scanning: return 180
         case .results:
-            if vm.items.isEmpty { return 180 }
-            let rows = min(vm.items.count, 7)
-            return min(CGFloat(40 + rows * 40 + 78), 400)
-        case .done:     return 240
+            if vm.items.isEmpty { return 160 }
+            let rows = min(vm.items.count, 8)
+            return min(CGFloat(40 + rows * 34 + 50), 380)
+        case .done: return 200
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             switch vm.phase {
-            case .idle:     IdleView(vm: vm)
-            case .scanning: ScanningView(vm: vm)
-            case .results:  ResultsView(vm: vm)
-            case .done:     DoneView(vm: vm)
+            case .idle:     IdleView(vm: vm).transition(.opacity)
+            case .scanning: ScanningView(vm: vm).transition(.opacity)
+            case .results:  ResultsView(vm: vm).transition(.opacity)
+            case .done:     DoneView(vm: vm).transition(.opacity)
             }
         }
-        .frame(width: 320, height: height)
-        .animation(.easeInOut(duration: 0.2), value: vm.phase)
-        .animation(.easeInOut(duration: 0.15), value: vm.autoCleanEnabled)
+        .frame(width: 223, height: height)
+        .animation(.easeInOut(duration: 0.25), value: vm.phase)
+        .animation(.easeInOut(duration: 0.15), value: vm.autoCleanExpanded)
         .background {
             VStack {
                 Button("") { vm.scan() }.keyboardShortcut("s", modifiers: .command)
@@ -423,134 +412,151 @@ struct PopoverRoot: View {
 
 // MARK: - Shared Components
 
-struct HeaderBar: View {
-    var isDemo = false
-    var onScanAgain: (() -> Void)? = nil
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "archivebox.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.primary)
-                Text("Clear Attic")
-                    .font(.system(size: 15, weight: .semibold))
-                if isDemo {
-                    Text("Demo")
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15))
-                        .foregroundColor(.secondary)
-                        .cornerRadius(4)
-                }
-                Spacer()
-                if let action = onScanAgain {
-                    Button(action: action) {
-                        HStack(spacing: 3) {
-                            Text("↩")
-                            Text("⌘S").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
-                        }.font(.system(size: 12))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(.primary)
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 40)
-            Divider()
-        }
-    }
-}
-
-struct MenuRow: View {
-    let title: String
-    let shortcut: String
-    var isSecondary = false
-    let action: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: 14))
-                    .foregroundColor(isSecondary ? .secondary : .primary)
-                Spacer()
-                Text(shortcut).font(.system(size: 12, design: .monospaced)).foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 16).frame(height: 40)
-            .background(hovered ? Color.primary.opacity(0.06) : .clear)
-            .cornerRadius(6).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).onHover { hovered = $0 }.padding(.horizontal, 4)
-    }
-}
-
-struct ToggleRow: View {
-    let title: String
-    @Binding var isOn: Bool
-    var detail: String? = nil
-
+struct BackHeader: View {
+    let onBack: () -> Void
     var body: some View {
         HStack {
-            Toggle(title, isOn: $isOn)
-                .toggleStyle(.switch).controlSize(.mini)
-            if let detail {
-                Spacer()
-                Text(detail).font(.system(size: 11)).foregroundColor(.secondary)
+            Button(action: onBack) {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Back")
+                        .font(.system(size: 11))
+                }
+                .foregroundColor(.white.opacity(0.5))
             }
+            .buttonStyle(.plain)
+            Spacer()
         }
-        .font(.system(size: 12)).foregroundColor(.secondary)
-        .padding(.horizontal, 20).frame(height: 32)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
     }
 }
 
-struct Badge: View {
-    let category: ItemCategory
+struct ShortcutLabel: View {
+    let key: String
     var body: some View {
-        Text(category.rawValue)
-            .font(.system(size: 10, weight: .medium))
-            .padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.12))
-            .foregroundColor(.secondary)
-            .cornerRadius(4)
+        HStack(spacing: 2) {
+            Image(systemName: "command")
+                .font(.system(size: 9))
+            Text(key)
+                .font(.system(size: 10.4))
+        }
+        .foregroundColor(.white.opacity(0.4))
     }
 }
 
-// MARK: - Idle
+struct MiniToggle: View {
+    @Binding var isOn: Bool
+    var body: some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            RoundedRectangle(cornerRadius: 25)
+                .fill(isOn ? Color.white.opacity(0.35) : Color.white.opacity(0.15))
+                .frame(width: 18, height: 10)
+            Circle()
+                .fill(Color.white)
+                .frame(width: 8, height: 8)
+                .padding(.horizontal, 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { isOn.toggle() } }
+    }
+}
+
+// MARK: - Idle View (Figma spec)
 
 struct IdleView: View {
     @ObservedObject var vm: AtticVM
+    @State private var hoveredRow: String?
+
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderBar(isDemo: vm.demoMode)
-            Spacer().frame(height: 6)
-            MenuRow(title: "Scan Attic", shortcut: "⌘S") { vm.scan() }
-            Divider().padding(.horizontal, 16)
-
-            ToggleRow(title: "Launch at Login", isOn: $vm.launchAtLogin)
-            ToggleRow(title: "Auto-Clean", isOn: $vm.autoCleanEnabled,
-                      detail: vm.autoCleanEnabled ? vm.scheduleText : nil)
-
-            if vm.autoCleanEnabled {
-                HStack(spacing: 8) {
-                    Picker("", selection: $vm.autoCleanDay) {
-                        ForEach(1...7, id: \.self) { Text(AtticVM.days[$0 - 1]).tag($0) }
-                    }.labelsHidden()
-                    Picker("", selection: $vm.autoCleanHour) {
-                        ForEach(0..<24, id: \.self) { Text(AtticVM.hourLabel($0)).tag($0) }
-                    }.labelsHidden()
-                }
-                .controlSize(.small)
-                .padding(.horizontal, 24).frame(height: 28)
+        VStack(alignment: .leading, spacing: 12) {
+            // 1. Scan Attic
+            idleRow("scan") {
+                vm.scan()
+            } label: {
+                Text("Scan Attic").font(.system(size: 12))
+                Spacer()
+                ShortcutLabel(key: "S")
             }
 
-            Divider().padding(.horizontal, 16)
-            ToggleRow(title: "Demo Mode", isOn: $vm.demoMode)
-            Divider().padding(.horizontal, 16)
-            MenuRow(title: "Quit", shortcut: "⌘Q", isSecondary: true) { NSApp.terminate(nil) }
-            Spacer().frame(height: 6)
+            // 2. Auto Clean
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { vm.autoCleanExpanded.toggle() }
+                } label: {
+                    HStack {
+                        Text("Auto Clean").font(.system(size: 12))
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .trailing) {
+                    if vm.autoCleanExpanded {
+                        MiniToggle(isOn: $vm.autoCleanEnabled)
+                    }
+                }
+
+                if vm.autoCleanExpanded {
+                    HStack(spacing: 6) {
+                        Picker("", selection: $vm.autoCleanDay) {
+                            ForEach(1...7, id: \.self) { Text(AtticVM.days[$0 - 1]).tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Picker("", selection: $vm.autoCleanHour) {
+                            ForEach(0..<24, id: \.self) { Text(AtticVM.hourLabel($0)).tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .controlSize(.small)
+                } else {
+                    Text(vm.autoCleanEnabled ? "on - \(vm.scheduleText)" : "off")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.leading, 2)
+                }
+            }
+
+            // 3. Launch at Login
+            HStack {
+                Text("Launch at Login").font(.system(size: 12))
+                Spacer()
+                MiniToggle(isOn: $vm.launchAtLogin)
+            }
+
+            // 4. Show how it works (runs demo scan)
+            idleRow("howitworks") {
+                vm.demoMode = true
+                vm.scan()
+            } label: {
+                Text("Show how it works").font(.system(size: 12))
+            }
+
+            // 5. Quit
+            idleRow("quit") {
+                NSApp.terminate(nil)
+            } label: {
+                Text("Quit").font(.system(size: 12))
+                Spacer()
+                ShortcutLabel(key: "Q")
+            }
         }
+        .foregroundColor(.white)
+        .padding(.vertical, 30)
+        .padding(.horizontal, 20)
+    }
+
+    private func idleRow<Label: View>(_ id: String, action: @escaping () -> Void,
+                                       @ViewBuilder label: () -> Label) -> some View {
+        Button(action: action) {
+            HStack { label() }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -560,13 +566,19 @@ struct ScanningView: View {
     @ObservedObject var vm: AtticVM
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar(isDemo: vm.demoMode)
+            BackHeader(onBack: vm.goIdle)
             Spacer()
-            VStack(spacing: 14) {
-                ProgressView().scaleEffect(1.3)
-                Text("Poking around the attic…").font(.system(size: 14))
+            VStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.9)
+                    .tint(.white.opacity(0.6))
+                Text("Poking around the attic…")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.8))
                 Text("\(vm.scannedCount.formatted()) items checked")
-                    .font(.system(size: 12)).foregroundColor(.secondary).monospacedDigit()
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.4))
+                    .monospacedDigit()
             }
             Spacer()
         }
@@ -580,55 +592,36 @@ struct ResultsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar(isDemo: vm.demoMode, onScanAgain: vm.scan)
+            BackHeader(onBack: vm.goIdle)
 
             if vm.items.isEmpty {
                 Spacer()
-                Text("Nothing dusty up here. You're good.")
-                    .font(.system(size: 14)).foregroundColor(.secondary)
+                Text("Nothing dusty up here.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.5))
                 Spacer()
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    VStack(spacing: 0) {
                         ForEach(vm.items) { item in
                             ResultRow(item: item) { vm.toggle(item.id) }
-                            Divider().padding(.leading, 16)
                         }
                     }
                 }
-                Divider()
 
-                HStack(spacing: 0) {
-                    Button("All") { vm.selectAll() }.keyboardShortcut("a", modifiers: .command)
-                    Text("  ⌘A").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
-                    Spacer().frame(width: 16)
-                    Button("None") { vm.selectNone() }
-                    Spacer()
-                    Text("\(vm.selectedCount) items").foregroundColor(.secondary)
+                // Clear All button
+                Button {
+                    vm.clear()
+                } label: {
+                    Text("Clear All")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(vm.selectedCount > 0 ? .red : .white.opacity(0.3))
+                        .frame(maxWidth: .infinity)
                 }
-                .font(.system(size: 12)).buttonStyle(.plain).foregroundColor(.primary)
-                .padding(.horizontal, 16).frame(height: 32)
-
-                Divider()
-
-                HStack {
-                    Spacer()
-                    Button {
-                        vm.clear()
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text("Clear Selected").fontWeight(.semibold)
-                            Text("⌘⌫").font(.system(size: 11, design: .monospaced)).opacity(0.7)
-                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                        }
-                        .font(.system(size: 13))
-                        .foregroundColor(vm.selectedCount > 0 ? .red : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut(.delete, modifiers: .command)
-                    .disabled(vm.selectedCount == 0)
-                }
-                .padding(.horizontal, 16).frame(height: 36)
+                .buttonStyle(.plain)
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(vm.selectedCount == 0)
+                .padding(.vertical, 10)
             }
         }
     }
@@ -643,21 +636,25 @@ struct ResultRow: View {
         Button(action: onToggle) {
             HStack(spacing: 8) {
                 Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
-                    .foregroundColor(item.isSelected ? .primary : .secondary)
-                    .font(.system(size: 14))
-                Text(item.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    .foregroundColor(item.isSelected ? .white : .white.opacity(0.3))
+                    .font(.system(size: 12))
+                Text(item.name)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(1)
                 Spacer(minLength: 4)
-                Badge(category: item.category)
                 Text(formatBytes(item.size))
-                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                    .frame(minWidth: 55, alignment: .trailing)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .monospacedDigit()
             }
-            .padding(.horizontal, 16).frame(height: 40)
-            .background(hovered ? Color.primary.opacity(0.06) :
-                            item.isSelected ? Color.primary.opacity(0.04) : .clear)
+            .padding(.horizontal, 20)
+            .frame(height: 34)
+            .background(hovered ? Color.white.opacity(0.06) : .clear)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).onHover { hovered = $0 }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -668,22 +665,23 @@ struct DoneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderBar(isDemo: vm.demoMode)
+            BackHeader(onBack: vm.goIdle)
             Spacer()
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 32))
+                    .font(.system(size: 24))
                     .foregroundColor(.green)
-                Text("Attic cleared.\nFeels lighter, doesn't it?")
-                    .font(.system(size: 14)).foregroundColor(.secondary).multilineTextAlignment(.center)
+                Text("Attic cleared.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.7))
                 Text(formatBytes(vm.totalFreed))
-                    .font(.system(size: 28, weight: .bold))
-                Text("freed").font(.system(size: 13)).foregroundColor(.secondary)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+                Text("freed")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
             }
             Spacer()
-            Divider().padding(.horizontal, 16)
-            MenuRow(title: "Scan Again", shortcut: "⌘S") { vm.scan() }
-            Spacer().frame(height: 4)
         }
     }
 }
