@@ -65,14 +65,13 @@ nonisolated class AtticVM: ObservableObject {
     @Published var items: [ScanItem] = []
     @Published var scannedCount = 0
     @Published var totalFreed: Int64 = 0
-    @Published var demoMode = false
     @Published var launchAtLogin = false
     @Published var autoCleanEnabled = false
     @Published var autoCleanDay = 1
     @Published var autoCleanHour = 21
     @Published var autoCleanExpanded = false
 
-    private let threshold: Int64 = 100 * 1024 * 1024
+    private let threshold: Int64 = 25 * 1024 * 1024
     private var generation = 0
     private var cancellables = Set<AnyCancellable>()
 
@@ -83,34 +82,27 @@ nonisolated class AtticVM: ObservableObject {
     }
     var scheduleText: String { "\(Self.days[autoCleanDay - 1]) \(Self.hourLabel(autoCleanHour))" }
 
-    private static func gb(_ v: Double) -> Int64 { Int64(v * 1_073_741_824) }
-    private static func mb(_ v: Double) -> Int64 { Int64(v * 1_048_576) }
-    private static let dummyURL = URL(fileURLWithPath: "/tmp/clearattic-demo")
-
-    static let demoItems: [ScanItem] = [
-        ScanItem(name: "Adobe Cache",       url: dummyURL, category: .dust,           size: gb(486.3), isSelected: true,  isDirectory: true),
-        ScanItem(name: "node_modules",      url: dummyURL, category: .forgottenBoxes, size: gb(12.4),  isSelected: true,  isDirectory: true),
-        ScanItem(name: "Xcode DerivedData", url: dummyURL, category: .blueprints,     size: gb(4.2),   isSelected: true,  isDirectory: true),
-        ScanItem(name: "Backup_2023.dmg",   url: dummyURL, category: .packedBags,     size: gb(8.1),   isSelected: true,  isDirectory: false),
-        ScanItem(name: "iOS Simulators",    url: dummyURL, category: .toyModels,      size: gb(3.9),   isSelected: false, isDirectory: true),
-        ScanItem(name: "Homebrew",          url: dummyURL, category: .dust,           size: mb(131),   isSelected: true,  isDirectory: true),
-        ScanItem(name: "pip cache",         url: dummyURL, category: .dust,           size: mb(389),   isSelected: true,  isDirectory: true),
-        ScanItem(name: "Spotify Cache",     url: dummyURL, category: .dust,           size: gb(1.3),   isSelected: true,  isDirectory: true),
-        ScanItem(name: "Old Logs",          url: dummyURL, category: .oldNotes,       size: mb(240),   isSelected: true,  isDirectory: true),
-    ]
-
     var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.size } }
     var selectedCount: Int { items.filter(\.isSelected).count }
 
     init() {
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        if #available(macOS 13.0, *) {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        } else {
+            launchAtLogin = UserDefaults.standard.bool(forKey: "launchAtLogin")
+        }
         autoCleanEnabled = UserDefaults.standard.bool(forKey: "autoClean")
         autoCleanDay = UserDefaults.standard.object(forKey: "autoCleanDay") as? Int ?? 1
         autoCleanHour = UserDefaults.standard.object(forKey: "autoCleanHour") as? Int ?? 21
 
         $launchAtLogin.dropFirst().sink { val in
-            if val { try? SMAppService.mainApp.register() }
-            else { try? SMAppService.mainApp.unregister() }
+            if #available(macOS 13.0, *) {
+                if val { try? SMAppService.mainApp.register() }
+                else { try? SMAppService.mainApp.unregister() }
+            } else {
+                SMLoginItemSetEnabled("com.hellobeekay.clear-attic" as CFString, val)
+                UserDefaults.standard.set(val, forKey: "launchAtLogin")
+            }
         }.store(in: &cancellables)
         $autoCleanEnabled.dropFirst().sink { val in
             UserDefaults.standard.set(val, forKey: "autoClean")
@@ -124,7 +116,11 @@ nonisolated class AtticVM: ObservableObject {
         }
     }
 
-    func syncLaunchAtLogin() { launchAtLogin = SMAppService.mainApp.status == .enabled }
+    func syncLaunchAtLogin() {
+        if #available(macOS 13.0, *) {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
 
     func goIdle() {
         generation += 1
@@ -132,21 +128,9 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     func scan() {
-        if demoMode { demoScan(); return }
         generation += 1; let gen = generation
         phase = .scanning; scannedCount = 0; items = []; totalFreed = 0
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.runScan(gen: gen) }
-    }
-
-    private func demoScan() {
-        phase = .scanning; scannedCount = 0; items = []; totalFreed = 0
-        var count = 0
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            count += Int.random(in: 40...80)
-            self.scannedCount = count
-            if count >= 2400 { timer.invalidate(); self.items = Self.demoItems; self.phase = .results }
-        }
     }
 
     func selectAll()  { for i in items.indices { items[i].isSelected = true } }
@@ -156,7 +140,6 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     func clear() {
-        if demoMode { totalFreed = Int64(510.7 * 1_073_741_824); phase = .done; scheduleDoneReset(); return }
         let doomed = items.filter(\.isSelected)
         guard !doomed.isEmpty else { return }
         totalFreed = doomed.reduce(0) { $0 + $1.size }
@@ -257,24 +240,61 @@ nonisolated class AtticVM: ObservableObject {
 
         scanDir("Library/Caches", .dust)
         scanDir("Library/Logs", .oldNotes)
-        for r in ["Library/Developer/Xcode/DerivedData", "Library/Developer/Xcode/Archives"] {
+
+        // Xcode build artifacts
+        for r in ["Library/Developer/Xcode/DerivedData",
+                  "Library/Developer/Xcode/Archives",
+                  "Library/Developer/Xcode/iOS DeviceSupport",
+                  "Library/Developer/Xcode/watchOS DeviceSupport",
+                  "Library/Developer/Xcode/tvOS DeviceSupport",
+                  "Library/Developer/Xcode/visionOS DeviceSupport"] {
             if shouldStop() { break }; scanDir(r, .blueprints)
         }
+
+        // Simulators
         let sim = home.appendingPathComponent("Library/Developer/CoreSimulator/Devices")
         if fm.fileExists(atPath: sim.path) { onTick(); add(sim, .toyModels, dir: true, sel: false) }
 
+        // iPhone/iPad backups
+        let backup = home.appendingPathComponent("Library/Application Support/MobileSync/Backup")
+        if fm.fileExists(atPath: backup.path) { onTick(); add(backup, .packedBags, dir: true, sel: false) }
+
+        // Package manager caches (dotfile dirs)
+        let dotCaches: [(String, ItemCategory)] = [
+            (".npm",              .forgottenBoxes),  // npm
+            (".yarn/cache",       .forgottenBoxes),  // Yarn
+            (".pnpm-store",       .forgottenBoxes),  // pnpm
+            (".gradle/caches",    .forgottenBoxes),  // Gradle
+            (".m2/repository",    .forgottenBoxes),  // Maven
+            (".pub-cache",        .forgottenBoxes),  // Flutter/Dart
+            (".cargo/registry",   .forgottenBoxes),  // Rust
+            (".cargo/git",        .forgottenBoxes),  // Rust git sources
+            (".rustup/toolchains",.forgottenBoxes),  // Rust toolchains
+            (".gem",              .dust),             // Ruby gems
+            (".rbenv/versions",   .dust),             // rbenv Rubies
+            (".pyenv/versions",   .dust),             // pyenv Pythons
+        ]
+        for (rel, cat) in dotCaches where !shouldStop() {
+            let p = home.appendingPathComponent(rel)
+            if fm.fileExists(atPath: p.path) { onTick(); add(p, cat, dir: true) }
+        }
+
+        // node_modules in project directories
         for root in ["Documents", "Projects", "Developer", "Code", "Sites", "Desktop", "src"] {
             if shouldStop() { break }
             let r = home.appendingPathComponent(root)
             if fm.fileExists(atPath: r.path) { findNM(in: r, depth: 0, threshold: threshold, shouldStop: shouldStop, onTick: onTick, fm: fm, found: &found) }
         }
 
-        let exts = Set(["dmg", "pkg", "zip"])
+        // Large files in Downloads
+        let exts = Set(["dmg", "pkg", "zip", "iso", "ipa", "xip", "tar", "gz", "rar", "7z"])
         if let list = try? fm.contentsOfDirectory(at: home.appendingPathComponent("Downloads"), includingPropertiesForKeys: nil) {
             for item in list where !shouldStop() {
                 if exts.contains(item.pathExtension.lowercased()) { onTick(); add(item, .packedBags, dir: false) }
             }
         }
+
+        // Trash
         let trash = home.appendingPathComponent(".Trash")
         if fm.fileExists(atPath: trash.path) { onTick(); add(trash, .junkPile, dir: true) }
 
@@ -335,6 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
         let vm = AtticVM()
         self.viewModel = vm
 
@@ -530,15 +551,7 @@ struct IdleView: View {
                 MiniToggle(isOn: $vm.launchAtLogin)
             }
 
-            // 4. Show how it works (runs demo scan)
-            idleRow("howitworks") {
-                vm.demoMode = true
-                vm.scan()
-            } label: {
-                Text("Show how it works").font(.system(size: 13))
-            }
-
-            // 5. Quit
+            // 4. Quit
             idleRow("quit") {
                 NSApp.terminate(nil)
             } label: {
@@ -682,6 +695,10 @@ struct DoneView: View {
                 Text("freed")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.4))
+                Text("Files are moved to trash.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.25))
+                    .padding(.top, 4)
             }
             Spacer()
         }
