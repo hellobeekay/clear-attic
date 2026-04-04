@@ -1,0 +1,7 @@
+.derivedData/
+.derivedData-*/
+
+clear attic.xcodeproj/project.xcworkspace/xcuserdata/
+clear attic.xcodeproj/xcuserdata/
+
+*.xcuserstate
