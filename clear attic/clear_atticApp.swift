@@ -65,6 +65,7 @@ nonisolated class AtticVM: ObservableObject {
     @Published var items: [ScanItem] = []
     @Published var scannedCount = 0
     @Published var totalFreed: Int64 = 0
+    @Published var demoMode = false
     @Published var launchAtLogin = false
     @Published var autoCleanEnabled = false
     @Published var autoCleanDay = 1
@@ -81,6 +82,22 @@ nonisolated class AtticVM: ObservableObject {
         if h == 12 { return "12 PM" }; return "\(h - 12) PM"
     }
     var scheduleText: String { "\(Self.days[autoCleanDay - 1]) \(Self.hourLabel(autoCleanHour))" }
+
+    private static func gb(_ v: Double) -> Int64 { Int64(v * 1_073_741_824) }
+    private static func mb(_ v: Double) -> Int64 { Int64(v * 1_048_576) }
+    private static let dummyURL = URL(fileURLWithPath: "/tmp/clearattic-demo")
+
+    static let demoItems: [ScanItem] = [
+        ScanItem(name: "Adobe Cache",       url: dummyURL, category: .dust,           size: gb(486.3), isSelected: true,  isDirectory: true),
+        ScanItem(name: "node_modules",      url: dummyURL, category: .forgottenBoxes, size: gb(12.4),  isSelected: true,  isDirectory: true),
+        ScanItem(name: "Xcode DerivedData", url: dummyURL, category: .blueprints,     size: gb(4.2),   isSelected: true,  isDirectory: true),
+        ScanItem(name: "Backup_2023.dmg",   url: dummyURL, category: .packedBags,     size: gb(8.1),   isSelected: true,  isDirectory: false),
+        ScanItem(name: "iOS Simulators",    url: dummyURL, category: .toyModels,      size: gb(3.9),   isSelected: false, isDirectory: true),
+        ScanItem(name: "Homebrew",          url: dummyURL, category: .dust,           size: mb(131),   isSelected: true,  isDirectory: true),
+        ScanItem(name: "pip cache",         url: dummyURL, category: .dust,           size: mb(389),   isSelected: true,  isDirectory: true),
+        ScanItem(name: "Spotify Cache",     url: dummyURL, category: .dust,           size: gb(1.3),   isSelected: true,  isDirectory: true),
+        ScanItem(name: "Old Logs",          url: dummyURL, category: .oldNotes,       size: mb(240),   isSelected: true,  isDirectory: true),
+    ]
 
     var selectedSize: Int64 { items.filter(\.isSelected).reduce(0) { $0 + $1.size } }
     var selectedCount: Int { items.filter(\.isSelected).count }
@@ -128,9 +145,21 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     func scan() {
+        if demoMode { demoScan(); return }
         generation += 1; let gen = generation
         phase = .scanning; scannedCount = 0; items = []; totalFreed = 0
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.runScan(gen: gen) }
+    }
+
+    private func demoScan() {
+        phase = .scanning; scannedCount = 0; items = []; totalFreed = 0
+        var count = 0
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            count += Int.random(in: 40...80)
+            self.scannedCount = count
+            if count >= 2400 { timer.invalidate(); self.items = Self.demoItems; self.phase = .results }
+        }
     }
 
     func selectAll()  { for i in items.indices { items[i].isSelected = true } }
@@ -140,6 +169,7 @@ nonisolated class AtticVM: ObservableObject {
     }
 
     func clear() {
+        if demoMode { totalFreed = Int64(510.7 * 1_073_741_824); phase = .done; scheduleDoneReset(); return }
         let doomed = items.filter(\.isSelected)
         guard !doomed.isEmpty else { return }
         totalFreed = doomed.reduce(0) { $0 + $1.size }
@@ -551,7 +581,15 @@ struct IdleView: View {
                 MiniToggle(isOn: $vm.launchAtLogin)
             }
 
-            // 4. Quit
+            // 4. Show how it works
+            idleRow("howitworks") {
+                vm.demoMode = true
+                vm.scan()
+            } label: {
+                Text("Show how it works").font(.system(size: 13))
+            }
+
+            // 5. Quit
             idleRow("quit") {
                 NSApp.terminate(nil)
             } label: {
